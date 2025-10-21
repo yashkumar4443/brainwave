@@ -1,3 +1,30 @@
+/**
+ * STEP 2: Restrict form access using an encrypted key in the URL.
+ */
+add_action( 'template_redirect', function() {
+
+    // 🟢 Replace with your actual form page slug or ID
+    $protected_page_slug = 'contact-form';  // e.g., if your page URL is /contact-form/
+    $valid_key           = 'test@123';      // temporary static key (later we’ll encrypt)
+
+    if ( is_page( $protected_page_slug ) ) {
+
+        // Get ?access= value from URL
+        $user_key = isset( $_GET['access'] ) ? sanitize_text_field( $_GET['access'] ) : '';
+
+        // If it’s not the valid key, block the page
+        if ( $user_key !== $valid_key ) {
+            wp_die(
+                '<h2>Access Denied</h2><p>This form can only be accessed through a secure link.</p>',
+                'Access Denied',
+                array( 'response' => 403 )
+            );
+        }
+    }
+});
+
+
+
 <?php
 /*
 Plugin Name: Multi Password Protector
