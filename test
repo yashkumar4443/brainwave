@@ -1,3 +1,75 @@
+add_action('gform_after_submission', 'sfh_encrypt_upload_email_pdf', 20, 2);
+function sfh_encrypt_upload_email_pdf($entry, $form) {
+
+    $target_form_id = 65; // Your form ID
+    if ((int)$form['id'] !== $target_form_id) return;
+
+    // Placeholder PDF path
+    $pdf_path = WP_CONTENT_DIR . '/uploads/test.pdf'; // Replace with actual PDF path later
+    if (!file_exists($pdf_path)) {
+        error_log("PDF not found at $pdf_path");
+        return;
+    }
+
+    // Encryption key (store securely in wp-config.php ideally)
+    $encryption_key = 'my-secret-key';
+
+    // Encrypt the PDF
+    $pdf_content = file_get_contents($pdf_path);
+    $encrypted_pdf = openssl_encrypt($pdf_content, 'AES-256-CBC', $encryption_key, 0, substr($encryption_key,0,16));
+
+    // Save encrypted PDF temporarily
+    $encrypted_path = WP_CONTENT_DIR . '/uploads/encrypted_' . basename($pdf_path);
+    file_put_contents($encrypted_path, $encrypted_pdf);
+
+    // SFTP Upload (placeholder, replace with real credentials)
+    $sftp_host = 'your.sftp.server';
+    $sftp_user = 'username';
+    $sftp_pass = 'password';
+    $sftp_port = 22;
+
+    $connection = ssh2_connect($sftp_host, $sftp_port);
+    if (!$connection || !ssh2_auth_password($connection, $sftp_user, $sftp_pass)) {
+        error_log("SFTP connection failed");
+        return;
+    }
+    $sftp = ssh2_sftp($connection);
+    $remote_path = "/remote/path/" . basename($encrypted_path);
+    if (!file_put_contents("ssh2.sftp://$sftp$remote_path", $encrypted_pdf)) {
+        error_log("SFTP upload failed");
+        return;
+    }
+
+    // Email Setup
+    $user_email = rgar($entry, '3'); // Replace '3' with your actual form field ID for user email
+    $internal_recipients = ['internal1@example.com','internal2@example.com'];
+
+    $subject = "Your encrypted PDF";
+    $message = "Please find your encrypted PDF attached.";
+    $attachments = [$encrypted_path];
+
+    wp_mail(array_merge([$user_email], $internal_recipients), $subject, $message, [], $attachments);
+
+    // Schedule deletion from SFTP after 5 minutes
+    wp_schedule_single_event(time() + 300, 'sfh_delete_sftp_pdf', [$remote_path, $sftp_host, $sftp_user, $sftp_pass, $sftp_port]);
+}
+
+// Hook to delete PDF from SFTP
+add_action('sfh_delete_sftp_pdf', function($remote_path, $sftp_host, $sftp_user, $sftp_pass, $sftp_port) {
+    $connection = ssh2_connect($sftp_host, $sftp_port);
+    if ($connection && ssh2_auth_password($connection, $sftp_user, $sftp_pass)) {
+        $sftp = ssh2_sftp($connection);
+        @unlink("ssh2.sftp://$sftp$remote_path");
+    }
+});
+
+
+
+
+
+
+
+
 add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
 function sfh_generate_pdf_after_submission($entry, $form) {
 
