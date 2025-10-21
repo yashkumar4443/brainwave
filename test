@@ -168,35 +168,6 @@ function mpp_render_settings_page() {
 </script></div>';
 }
 ?>
-Hi team,
 
- 
 
-I have outlined the proposed workflow for automating the Prescription Transfer Request Form process below.
 
-Please have a look and share feedback.
-
- 
-
-Secure Form Submission
-The form will be accessed and submitted through a unique encrypted field (test@123) embedded in the URL (via a URL shortener).
-Data submission will be encrypted in motion to ensure security.
- 
-
-User Confirmation
-Once the form is submitted, the user will see a confirmation message stating "Form submitted successfully."
- 
-
-PDF Generation & Delivery Process
-Upon form submission, a PDF version of the form data will be automatically generated.
-The PDF will be encrypted and temporarily uploaded to a secure FTP location.
-An automated then will be sent to:
-The person who filled the form (user email), and
-A predefined internal recipient list.
-The email will include the encrypted PDF attachment.
-After 5 minutes of successful email delivery, the PDF will be automatically deleted from the FTP server.
- 
-
-Additional Notes :
-The entire process will be handled through custom WordPress code integrated with Gravity Forms.
-All steps ensure encryption in motion and follow secure handling practices for sensitive form data.
