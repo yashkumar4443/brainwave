@@ -1,19 +1,31 @@
-// TEMPORARY: List Gravity PDF feeds for debugging safely
-add_action('admin_init', function() {
-    // Check if Gravity PDF API exists
-    if (!class_exists('GPDFAPI')) {
-        error_log('Gravity PDF not loaded yet.');
+add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
+function sfh_generate_pdf_after_submission($entry, $form) {
+
+    $target_form_id = 65; // Gravity Form ID
+    $pdf_feed_id    = 7;  // Numeric PDF Feed ID (from your feed)
+
+    if ((int) $form['id'] !== $target_form_id) return;
+
+    // Make sure Gravity PDF class exists
+    if (!class_exists('\GFPDF\Includes\PDF_GravityPDF')) {
+        error_log('Gravity PDF not loaded.');
         return;
     }
 
-    // Only run for a specific admin page to be extra safe
-    $current_screen = get_current_screen();
-    if ($current_screen && $current_screen->base !== 'dashboard') return;
+    try {
+        // Use Gravity PDF API to safely generate PDF
+        $pdf_generator = new \GFPDF\Includes\PDF_GravityPDF();
+        $pdf_generator->generate($entry['id'], $pdf_feed_id);
 
-    $form_id = 65; // Replace with your Gravity Form ID
-    $feeds = GPDFAPI::get_feeds($form_id); 
-    error_log('Feeds for form ' . $form_id . ': ' . print_r($feeds, true));
-});
+        // You can store the path manually if needed, e.g.
+        $pdf_path = WP_CONTENT_DIR . '/uploads/pdfs/generated_' . $entry['id'] . '.pdf';
+        gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
+
+        error_log("PDF generation executed for entry: " . $entry['id']);
+    } catch (Exception $e) {
+        error_log('PDF generation failed: ' . $e->getMessage());
+    }
+}
 
 
 
