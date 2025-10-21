@@ -1,11 +1,20 @@
-// TEMPORARY: List Gravity PDF feeds for debugging
+// TEMPORARY: List Gravity PDF feeds for debugging safely
 add_action('admin_init', function() {
-    if (!class_exists('GPDFAPI')) return;
+    // Check if Gravity PDF API exists
+    if (!class_exists('GPDFAPI')) {
+        error_log('Gravity PDF not loaded yet.');
+        return;
+    }
+
+    // Only run for a specific admin page to be extra safe
+    $current_screen = get_current_screen();
+    if ($current_screen && $current_screen->base !== 'dashboard') return;
 
     $form_id = 65; // Replace with your Gravity Form ID
     $feeds = GPDFAPI::get_feeds($form_id); 
     error_log('Feeds for form ' . $form_id . ': ' . print_r($feeds, true));
 });
+
 
 
 
