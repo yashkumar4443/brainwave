@@ -1,4 +1,44 @@
 /**
+ * STEP 3: Generate PDF automatically after form submission.
+ */
+add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
+function sfh_generate_pdf_after_submission($entry, $form) {
+
+    // ✅ Replace with your actual Gravity Form ID and PDF feed ID
+    $target_form_id = 1;    // Your form ID
+    $pdf_feed_id    = 5;    // Your Gravity PDF feed ID
+
+    if ((int) $form['id'] !== $target_form_id) {
+        return; // not our target form
+    }
+
+    // Ensure Gravity PDF API is available
+    if (!class_exists('GPDFAPI')) {
+        error_log('Gravity PDF not found. PDF not generated.');
+        return;
+    }
+
+    try {
+        // Generate the PDF and get its file path
+        $pdf_path = GPDFAPI::generate_pdf($entry['id'], $pdf_feed_id, true);
+
+        if ($pdf_path && file_exists($pdf_path)) {
+            // Store file path in entry meta for later encryption/upload
+            gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
+            error_log("PDF generated: $pdf_path");
+        } else {
+            error_log('Failed to generate PDF.');
+        }
+    } catch (Exception $e) {
+        error_log('PDF generation error: ' . $e->getMessage());
+    }
+}
+
+
+
+
+
+/**
  * STEP 2: Restrict form access using an encrypted key in the URL.
  */
 add_action( 'template_redirect', function() {
