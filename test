@@ -1,3 +1,14 @@
+// TEMPORARY: List Gravity PDF feeds for debugging
+add_action('admin_init', function() {
+    if (!class_exists('GPDFAPI')) return;
+
+    $form_id = 65; // Replace with your Gravity Form ID
+    $feeds = GPDFAPI::get_feeds($form_id); 
+    error_log('Feeds for form ' . $form_id . ': ' . print_r($feeds, true));
+});
+
+
+
 add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
 function sfh_generate_pdf_after_submission($entry, $form) {
 
