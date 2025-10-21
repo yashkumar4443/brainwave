@@ -1,0 +1,170 @@
+<?php
+/*
+Plugin Name: Multi Password Protector
+Description: Secure specific pages using multiple passwords, usage limits, and expiry dates.
+Version: 1.4.0
+Author: 
+*/
+function mpp_cleanup_expired_passwords() {
+   $passwords = get_option('mpp_passwords', []);
+   $now = date('Y-m-d');
+   $changed = false;
+   foreach ($passwords as $key => $entry) {
+       if ((!empty($entry['expiry']) && $entry['expiry'] < $now) ||
+           (!empty($entry['limit']) && $entry['used'] >= $entry['limit'])) {
+           unset($passwords[$key]);
+           $changed = true;
+       }
+   }
+   if ($changed) update_option('mpp_passwords', array_values($passwords));
+}
+function mpp_log_access($password, $page_id) {
+   $logs = get_option('mpp_access_logs', []);
+   $logs[] = [
+       'time' => current_time('mysql'),
+       'page_id' => $page_id,
+       'ip' => $_SERVER['REMOTE_ADDR'],
+       'password' => substr($password, 0, 2) . str_repeat('*', strlen($password) - 2)
+   ];
+   update_option('mpp_access_logs', $logs);
+}
+add_action('template_redirect', 'mpp_protect_page_before_render');
+function mpp_protect_page_before_render() {
+   if (is_singular('page')) {
+       mpp_cleanup_expired_passwords();
+       $page_id = get_the_ID();
+       $passwords = get_option('mpp_passwords', []);
+       $session_key = 'mpp_' . $page_id;
+       if (!session_id()) session_start();
+       if (!empty($_SESSION[$session_key])) return;
+       $ip_key = 'mpp_attempts_' . $_SERVER['REMOTE_ADDR'];
+       $attempts = get_transient($ip_key);
+       if ($attempts === false) $attempts = 0;
+       if ($attempts >= 5) {
+           wp_die('<p>Too many failed attempts. Try again in 30 minutes.</p>');
+       }
+       if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mpp_password'])) {
+           $entered = sanitize_text_field($_POST['mpp_password']);
+           foreach ($passwords as &$entry) {
+               if ($entry['password'] === $entered && $entry['page'] == $page_id) {
+                   $now = date('Y-m-d');
+                   if (!empty($entry['expiry']) && $entry['expiry'] < $now) {
+                       wp_die('<p>Password expired.</p>');
+                   }
+                   if (!empty($entry['limit']) && $entry['used'] >= $entry['limit']) {
+                       wp_die('<p>Password usage limit reached.</p>');
+                   }
+                   $entry['used'] += 1;
+                   update_option('mpp_passwords', $passwords);
+                   mpp_log_access($entered, $page_id);
+                   $_SESSION[$session_key] = true;
+                   return;
+               }
+           }
+           $attempts++;
+           set_transient($ip_key, $attempts, 1800);
+           echo '<p>Incorrect password.</p>';
+       }
+       get_header();
+       echo '<style>
+       .mpp-form-container {
+           max-width: 400px;
+           margin: 80px auto;
+           padding: 30px;
+           border: 1px solid #ddd;
+           border-radius: 10px;
+           background: #fafafa;
+           font-family: sans-serif;
+           box-shadow: 0 0 10px rgba(0,0,0,0.05);
+       }
+       .mpp-form-container input[type="password"] {
+           width: 100%;
+           padding: 12px;
+           font-size: 16px;
+           border: 1px solid #ccc;
+           border-radius: 6px;
+           margin-bottom: 15px;
+       }
+       .mpp-form-container button {
+           padding: 12px 20px;
+           font-size: 16px;
+           background-color: #0073aa;
+           color: #fff;
+           border: none;
+           border-radius: 6px;
+           cursor: pointer;
+       }
+       .mpp-form-container button:hover {
+           background-color: #005a87;
+       }
+</style>';
+       echo '<div class="mpp-form-container">';
+       echo '<form method="post"><input type="password" name="mpp_password" placeholder="Enter password" required />';
+       echo '<button type="submit">Submit</button></form>';
+       echo '</div>';
+       get_footer();
+       exit;
+   }
+}
+add_action('admin_menu', function () {
+   add_options_page('Multi Password Protector', 'Password Protection', 'manage_options', 'mpp-settings', 'mpp_render_settings_page');
+});
+function mpp_render_settings_page() {
+   if (!empty($_POST['mpp_passwords'])) {
+       $passwords = [];
+       for ($i = 0; $i < count($_POST['mpp_passwords']); $i++) {
+           if (isset($_POST['mpp_delete'][$i]) && $_POST['mpp_delete'][$i] === '1') {
+               continue;
+           }
+           $passwords[] = [
+               'password' => sanitize_text_field($_POST['mpp_passwords'][$i]),
+               'expiry' => sanitize_text_field($_POST['mpp_expiry'][$i]),
+               'limit' => intval($_POST['mpp_limit'][$i]),
+               'page' => intval($_POST['mpp_page'][$i]),
+               'used' => 0
+           ];
+       }
+       update_option('mpp_passwords', $passwords);
+       echo '<div class="updated"><p>Passwords saved.</p></div>';
+   }
+   $passwords = get_option('mpp_passwords', []);
+   echo '<div class="wrap"><h2>Multi Password Protector</h2><form method="post">';
+   echo '<table class="widefat" id="mpp-passwords-table"><thead><tr><th>Password</th><th>Expiry Date</th><th>Limit</th><th>Page</th><th>Delete</th></tr></thead><tbody>';
+   foreach ($passwords as $index => $entry) {
+       echo '<tr>';
+       echo '<td><input name="mpp_passwords[]" value="' . esc_attr($entry['password']) . '" /></td>';
+       echo '<td><input name="mpp_expiry[]" value="' . esc_attr($entry['expiry']) . '" /></td>';
+       echo '<td><input name="mpp_limit[]" type="number" value="' . intval($entry['limit']) . '" /></td>';
+       echo '<td><select name="mpp_page[]">';
+       $pages = get_pages();
+       foreach ($pages as $page) {
+           $selected = $page->ID == intval($entry['page']) ? 'selected' : '';
+           echo '<option value="' . $page->ID . '" ' . $selected . '>' . esc_html($page->post_title) . '</option>';
+       }
+       echo '</select></td>';
+       echo '<td><input type="checkbox" name="mpp_delete['.$index.']" value="1" /></td>';
+       echo '</tr>';
+   }
+   echo '</tbody></table>';
+   echo '<p><button id="mpp-add-password" class="button">Add New Password</button> <input type="submit" value="Save Passwords" class="button button-primary"></p></form>';
+   echo '<script>
+   document.addEventListener("DOMContentLoaded", function() {
+       document.getElementById("mpp-add-password").addEventListener("click", function(e) {
+           e.preventDefault();
+           const table = document.querySelector("#mpp-passwords-table tbody");
+           const firstSelect = document.querySelector("select[name=\'mpp_page[]\']");
+           const options = firstSelect ? firstSelect.cloneNode(true).innerHTML : "";
+           const row = document.createElement("tr");
+           row.innerHTML = `
+<td><input name="mpp_passwords[]" value="" /></td>
+<td><input name="mpp_expiry[]" value="" placeholder="YYYY-MM-DD" /></td>
+<td><input name="mpp_limit[]" type="number" value="1" /></td>
+<td><select name="mpp_page[]">${options}</select></td>
+<td><input type="checkbox" name="mpp_delete[]" value="1" /></td>
+           `;
+           table.appendChild(row);
+       });
+   });
+</script></div>';
+}
+?>
