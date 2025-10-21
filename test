@@ -1,3 +1,32 @@
+add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
+function sfh_generate_pdf_after_submission($entry, $form) {
+
+    $target_form_id = 65;                 // Your Gravity Form ID
+    $pdf_feed_id    = '6877e61baa056';    // Your Gravity PDF feed ID as string
+
+    if ((int) $form['id'] !== $target_form_id) return;
+
+    if (!class_exists('GPDFAPI')) {
+        error_log('Gravity PDF not active.');
+        return;
+    }
+
+    try {
+        $pdf_path = GPDFAPI::generate_pdf($entry['id'], $pdf_feed_id, true);
+        if ($pdf_path && file_exists($pdf_path)) {
+            gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
+            error_log("PDF generated: $pdf_path");
+        } else {
+            error_log('PDF not generated.');
+        }
+    } catch (Exception $e) {
+        error_log('PDF generation exception: ' . $e->getMessage());
+    }
+}
+
+
+
+
 <?php
 /*
 Plugin Name: Secure Form Handler
