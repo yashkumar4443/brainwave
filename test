@@ -1,3 +1,315 @@
+
+<?php
+/*
+Plugin Name: Secure Form Handler (Gravity PDF + Password Gate)
+Description: Secure Gravity Form handling with server-side password gate, Gravity PDF generation, encryption, secure download link & queued emails.
+Version: 2.3
+Author: Yash (final)
+*/
+
+if (! defined('ABSPATH')) exit;
+
+/* -------------------------
+   CONFIG - Edit these
+   ------------------------- */
+if (! defined('SFH_FORM_ID')) define('SFH_FORM_ID', 65);                // Gravity Form ID
+if (! defined('SFH_PDF_FEED_ID')) define('SFH_PDF_FEED_ID', 7);         // Numeric Gravity PDF feed ID (replace with actual)
+if (! defined('SFH_USER_EMAIL_FIELD')) define('SFH_USER_EMAIL_FIELD', 36); // User email field ID (you provided 36)
+if (! defined('SFH_PAGE_SLUG')) define('SFH_PAGE_SLUG', 'prescription-transfer-request-form'); // page slug to gate
+if (! defined('SFH_PASSWORD')) define('SFH_PASSWORD', 'test123');       // gate password (kept as requested)
+if (! defined('SFH_TEMP_DIR')) define('SFH_TEMP_DIR', WP_CONTENT_DIR . '/uploads/sfh-temp/'); // where encrypted files stored
+if (! defined('SFH_INTERNAL_RECIPIENTS')) define('SFH_INTERNAL_RECIPIENTS', serialize(array(
+    'internal1@example.com',
+    'internal2@example.com',
+    // add more addresses as needed (100+ supported)
+)));
+
+/* Helper: ensure temp directory exists */
+add_action('init', function() {
+    $dir = SFH_TEMP_DIR;
+    if (! file_exists($dir)) wp_mkdir_p($dir);
+});
+
+/* -------------------------
+   Password Gate (server-side)
+   ------------------------- */
+add_action('template_redirect', function() {
+
+    if (! is_page(SFH_PAGE_SLUG) ) return;
+
+    // start session to preserve access across pages
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
+
+    $session_key = 'sfh_page_access_' . get_the_ID();
+
+    // If already authorized in this session, allow
+    if (! empty($_SESSION[$session_key]) ) return;
+
+    // Handle posted password
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfh_password'])) {
+        $entered = sanitize_text_field($_POST['sfh_password']);
+        if (hash_equals(SFH_PASSWORD, $entered)) {
+            $_SESSION[$session_key] = true;
+            // reload to show form
+            wp_safe_redirect(remove_query_arg(array('sfh_password'), wp_get_referer() ?: get_permalink()));
+            exit;
+        } else {
+            $error = '<p style="color:#b94a48;">Incorrect password.</p>';
+        }
+    }
+
+    // Render a very small password box and stop page rendering until correct
+    get_header();
+    echo '<style>
+    .sfh-gate { max-width:400px; margin:80px auto; padding:25px; border:1px solid #ddd; border-radius:8px; background:#fafafa; font-family:sans-serif; box-shadow:0 2px 8px rgba(0,0,0,0.05);}
+    .sfh-gate input[type="password"]{width:100%; padding:10px; font-size:16px; margin-bottom:12px; border-radius:4px; border:1px solid #ccc;}
+    .sfh-gate button{background:#0073aa;color:#fff;padding:10px 16px;border-radius:4px;border:none;cursor:pointer;}
+    </style>';
+    echo '<div class="sfh-gate"><h3>Enter Access Password</h3>';
+    if (! empty($error)) echo $error;
+    echo '<form method="post" autocomplete="off">';
+    echo '<input type="password" name="sfh_password" placeholder="Enter password" required />';
+    echo '<div style="text-align:right;"><button type="submit">Submit</button></div>';
+    echo '</form></div>';
+    get_footer();
+    exit;
+});
+
+/* -------------------------
+   On form submission: generate Gravity PDF
+   ------------------------- */
+add_action('gform_after_submission', 'sfh_generate_gravity_pdf', 10, 2);
+function sfh_generate_gravity_pdf($entry, $form) {
+    $target_form_id = (int) SFH_FORM_ID;
+    $pdf_feed_id    = SFH_PDF_FEED_ID;
+
+    if ((int)$form['id'] !== $target_form_id) return;
+
+    // Try to generate using multiple Gravity PDF APIs safely
+    $generated_pdf_path = false;
+
+    // older API
+    if (class_exists('GPDFAPI') && is_callable(['GPDFAPI','generate_pdf'])) {
+        try {
+            $maybe = GPDFAPI::generate_pdf($entry['id'], $pdf_feed_id, true);
+            if ($maybe && is_string($maybe) && file_exists($maybe)) $generated_pdf_path = $maybe;
+        } catch (Exception $e) {
+            error_log('[SFH] GPDFAPI::generate_pdf error: ' . $e->getMessage());
+        }
+    }
+
+    // v6+ API
+    if (! $generated_pdf_path && class_exists('\GFPDF\Includes\PDF_GravityPDF')) {
+        try {
+            $pdf_generator = new \GFPDF\Includes\PDF_GravityPDF();
+            $maybe = $pdf_generator->generate($entry['id'], $pdf_feed_id);
+            if ($maybe && is_string($maybe) && file_exists($maybe)) $generated_pdf_path = $maybe;
+        } catch (Exception $e) {
+            error_log('[SFH] PDF_GravityPDF generate error: ' . $e->getMessage());
+        }
+    }
+
+    // Fallback: look for pdf in uploads containing entry id (best-effort)
+    if (! $generated_pdf_path) {
+        $found = sfh_find_pdf_for_entry($entry['id']);
+        if ($found) $generated_pdf_path = $found;
+    }
+
+    if (! $generated_pdf_path || ! file_exists($generated_pdf_path) ) {
+        error_log('[SFH] PDF not found/generated for entry: ' . $entry['id']);
+        return;
+    }
+
+    // Log exact path for you to check on disk
+    error_log('[SFH] Generated PDF path: ' . $generated_pdf_path);
+
+    // Store path in entry meta
+    gform_update_meta($entry['id'], 'sfh_pdf_path', $generated_pdf_path);
+
+    // Proceed: encrypt + create secure link + queue emails + schedule deletion
+    sfh_encrypt_and_queue_email($entry, $generated_pdf_path);
+}
+
+/* Helper: best-effort find */
+function sfh_find_pdf_for_entry($entry_id) {
+    $uploads = wp_get_upload_dir();
+    $basedir = trailingslashit($uploads['basedir']);
+    $matches = glob($basedir . '*.pdf');
+    $now = time();
+    if (! $matches) return false;
+    foreach ($matches as $f) {
+        if (strpos(basename($f), (string)$entry_id) !== false && (($now - filemtime($f)) <= 600)) {
+            return $f;
+        }
+    }
+    return false;
+}
+
+/* -------------------------
+   Encryption + Queueing
+   ------------------------- */
+function sfh_encrypt_and_queue_email($entry, $pdf_path) {
+
+    // get encryption key from wp-config if present; otherwise from option (auto-generated)
+    if (defined('FORM_PDF_ENCRYPTION_KEY') && FORM_PDF_ENCRYPTION_KEY) {
+        $raw_key = FORM_PDF_ENCRYPTION_KEY;
+    } else {
+        $opt = get_option('sfh_enc_key', '');
+        if (empty($opt)) {
+            $raw_key = bin2hex(openssl_random_pseudo_bytes(16)); // 32 hex chars
+            update_option('sfh_enc_key', $raw_key);
+            error_log('[SFH] Generated encryption key in options (set FORM_PDF_ENCRYPTION_KEY in wp-config.php for prod).');
+        } else {
+            $raw_key = $opt;
+        }
+    }
+
+    // normalize to 32 bytes
+    $key = hash('sha256', $raw_key, true);
+
+    $ivlen = openssl_cipher_iv_length('AES-256-CBC');
+    $iv = openssl_random_pseudo_bytes($ivlen);
+
+    $data = file_get_contents($pdf_path);
+    if ($data === false) {
+        error_log('[SFH] Failed to read generated PDF: ' . $pdf_path);
+        return;
+    }
+
+    $ciphertext_raw = openssl_encrypt($data, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+    if ($ciphertext_raw === false) {
+        error_log('[SFH] openssl_encrypt failed for: ' . $pdf_path);
+        return;
+    }
+
+    // payload: IV + ciphertext (raw), stored as binary file
+    $payload = $iv . $ciphertext_raw;
+
+    // write encrypted file to temp dir
+    $temp_dir = SFH_TEMP_DIR;
+    if (! file_exists($temp_dir)) wp_mkdir_p($temp_dir);
+    $enc_filename = 'sfh_enc_' . time() . '_' . wp_hash($pdf_path) . '.bin';
+    $enc_path = trailingslashit($temp_dir) . $enc_filename;
+    $written = file_put_contents($enc_path, $payload);
+    if ($written === false) {
+        error_log('[SFH] Failed to write encrypted file: ' . $enc_path);
+        return;
+    }
+
+    // remove unencrypted original (for extra safety)
+    if (file_exists($pdf_path)) {
+        @unlink($pdf_path);
+    }
+
+    // create transient token valid for 5 minutes
+    $token = wp_generate_password(24, false);
+    set_transient('sfh_pdf_' . $token, $enc_path, 5 * MINUTE_IN_SECONDS);
+
+    // prepare recipients
+    $user_email = rgar($entry, (string) SFH_USER_EMAIL_FIELD);
+    $internal = unserialize(SFH_INTERNAL_RECIPIENTS);
+    $recipients = array();
+    if (filter_var($user_email, FILTER_VALIDATE_EMAIL)) $recipients[] = $user_email;
+    if (is_array($internal)) {
+        foreach ($internal as $em) {
+            if (filter_var($em, FILTER_VALIDATE_EMAIL)) $recipients[] = $em;
+        }
+    }
+
+    // message
+    $download_link = esc_url_raw(site_url('?sfh_download=' . $token));
+    $subject = 'Secure Form Submission - Encrypted PDF';
+    $message = "A new secure submission is available. Download link (valid for 5 minutes):\n\n" . $download_link;
+
+    // queue each recipient to avoid timeout & throttling
+    foreach ($recipients as $recipient) {
+        // random small delay between 5 and 120 seconds (stagger)
+        $delay = rand(5, 120);
+        wp_schedule_single_event(time() + $delay, 'sfh_send_queued_email', array($recipient, $subject, $message));
+    }
+
+    // schedule deletion of encrypted file after 5 minutes
+    wp_schedule_single_event(time() + 300, 'sfh_delete_temp_file', array($enc_path));
+}
+
+/* Cron: send queued email */
+add_action('sfh_send_queued_email', function($to, $subject, $message) {
+    // On dev, simulate
+    if (defined('WP_ENV') && WP_ENV === 'development') {
+        error_log('[SFH] Simulated send to ' . $to . ' subject: ' . $subject);
+        return;
+    }
+    $headers = array('Content-Type: text/plain; charset=UTF-8');
+    $sent = wp_mail($to, $subject, $message, $headers);
+    if (! $sent) error_log('[SFH] wp_mail failed for ' . $to);
+});
+
+/* Cron: delete encrypted temp file */
+add_action('sfh_delete_temp_file', function($file) {
+    if ($file && file_exists($file)) {
+        @unlink($file);
+        error_log('[SFH] Deleted encrypted temp file: ' . $file);
+    }
+});
+
+/* -------------------------
+   Secure download handler (uses transient token -> encrypted payload)
+   ------------------------- */
+add_action('init', function() {
+    if (! isset($_GET['sfh_download'])) return;
+    $token = sanitize_text_field($_GET['sfh_download']);
+    $trans = get_transient('sfh_pdf_' . $token);
+    if (! $trans || ! file_exists($trans)) {
+        wp_die('This secure link has expired or is invalid.', 'Link Expired', array('response' => 410));
+    }
+
+    // Read binary payload (IV + ciphertext)
+    $payload = file_get_contents($trans);
+    if ($payload === false) {
+        wp_die('File read error.', 'Error', array('response' => 500));
+    }
+
+    // get key same way as used for encryption
+    if (defined('FORM_PDF_ENCRYPTION_KEY') && FORM_PDF_ENCRYPTION_KEY) {
+        $raw_key = FORM_PDF_ENCRYPTION_KEY;
+    } else {
+        $raw_key = get_option('sfh_enc_key', '');
+    }
+    $key = hash('sha256', $raw_key, true);
+    $ivlen = openssl_cipher_iv_length('AES-256-CBC');
+
+    $iv = substr($payload, 0, $ivlen);
+    $ciphertext_raw = substr($payload, $ivlen);
+
+    $decrypted = openssl_decrypt($ciphertext_raw, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+
+    if ($decrypted === false) {
+        wp_die('Decryption failed.', 'Error', array('response' => 500));
+    }
+
+    // Serve PDF to user
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: attachment; filename="secure_submission.pdf"');
+    echo $decrypted;
+    // do NOT immediately delete file here — it will be auto-deleted by scheduled job
+    exit;
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <?php
 /*
 Plugin Name: Secure Form Handler
