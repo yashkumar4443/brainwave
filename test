@@ -1,3 +1,71 @@
+<?php
+/*
+Plugin Name: Secure Form Handler
+Description: Handles encrypted Gravity Form submission, PDF generation, and FTP upload.
+Version: 1.0
+Author: Yash
+*/
+
+// Exit if access directly
+if ( ! defined( 'ABSPATH') ) exit;
+
+/**
+ * STEP 2: Restrict form access using an encrypted key in the URL.
+ */
+add_action( 'template_redirect', function() {
+
+    // ?? Replace with your actual form page slug or ID
+    $protected_page_slug = 'prescription-transfer-request-form';  // e.g., if your page URL is /contact-form/
+    $valid_key           = 'test123';      // temporary static key (later we’ll encrypt)
+
+    if ( is_page( $protected_page_slug ) ) {
+
+        // Get ?access= value from URL
+        $user_key = isset( $_GET['access'] ) ? sanitize_text_field( $_GET['access'] ) : '';
+
+        // If it’s not the valid key, block the page
+        if ( $user_key !== $valid_key ) {
+            wp_die(
+                '<h2>Access Denied</h2><p>This form can only be accessed through a secure link.</p>',
+                'Access Denied',
+                array( 'response' => 403 )
+            );
+        }
+    }
+});
+
+/**
+ * STEP 3: Generate PDF automatically after form submission.
+ */
+add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
+function sfh_generate_pdf_after_submission($entry, $form) {
+
+    $target_form_id = 65; // Gravity Form ID
+    $pdf_feed_id    = 7;  // Numeric PDF Feed ID (from your feed)
+
+    if ((int) $form['id'] !== $target_form_id) return;
+
+    // Make sure Gravity PDF class exists
+    if (!class_exists('\GFPDF\Includes\PDF_GravityPDF')) {
+        error_log('Gravity PDF not loaded.');
+        return;
+    }
+
+    try {
+        // Use Gravity PDF API to safely generate PDF
+        $pdf_generator = new \GFPDF\Includes\PDF_GravityPDF();
+        $pdf_generator->generate($entry['id'], $pdf_feed_id);
+
+        // You can store the path manually if needed, e.g.
+        $pdf_path = WP_CONTENT_DIR . '/uploads/pdfs/generated_' . $entry['id'] . '.pdf';
+        gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
+
+        error_log("PDF generation executed for entry: " . $entry['id']);
+    } catch (Exception $e) {
+        error_log('PDF generation failed: ' . $e->getMessage());
+    }
+}
+
 add_action('gform_after_submission', 'sfh_encrypt_upload_email_pdf', 20, 2);
 function sfh_encrypt_upload_email_pdf($entry, $form) {
 
@@ -62,142 +130,3 @@ add_action('sfh_delete_sftp_pdf', function($remote_path, $sftp_host, $sftp_user,
         @unlink("ssh2.sftp://$sftp$remote_path");
     }
 });
-
-
-
-
-
-
-
-
-add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
-function sfh_generate_pdf_after_submission($entry, $form) {
-
-    $target_form_id = 65; // Gravity Form ID
-    $pdf_feed_id    = 7;  // Numeric PDF Feed ID (from your feed)
-
-    if ((int) $form['id'] !== $target_form_id) return;
-
-    // Make sure Gravity PDF class exists
-    if (!class_exists('\GFPDF\Includes\PDF_GravityPDF')) {
-        error_log('Gravity PDF not loaded.');
-        return;
-    }
-
-    try {
-        // Use Gravity PDF API to safely generate PDF
-        $pdf_generator = new \GFPDF\Includes\PDF_GravityPDF();
-        $pdf_generator->generate($entry['id'], $pdf_feed_id);
-
-        // You can store the path manually if needed, e.g.
-        $pdf_path = WP_CONTENT_DIR . '/uploads/pdfs/generated_' . $entry['id'] . '.pdf';
-        gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
-
-        error_log("PDF generation executed for entry: " . $entry['id']);
-    } catch (Exception $e) {
-        error_log('PDF generation failed: ' . $e->getMessage());
-    }
-}
-
-
-
-
-add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
-function sfh_generate_pdf_after_submission($entry, $form) {
-
-    $target_form_id = 65;                 // Your Gravity Form ID
-    $pdf_feed_id    = '6877e61baa056';    // Your Gravity PDF feed ID as string
-
-    if ((int) $form['id'] !== $target_form_id) return;
-
-    if (!class_exists('GPDFAPI')) {
-        error_log('Gravity PDF not active.');
-        return;
-    }
-
-    try {
-        $pdf_path = GPDFAPI::generate_pdf($entry['id'], $pdf_feed_id, true);
-        if ($pdf_path && file_exists($pdf_path)) {
-            gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
-            error_log("PDF generated: $pdf_path");
-        } else {
-            error_log('PDF not generated.');
-        }
-    } catch (Exception $e) {
-        error_log('PDF generation exception: ' . $e->getMessage());
-    }
-}
-
-
-
-
-<?php
-/*
-Plugin Name: Secure Form Handler
-Description: Handles encrypted Gravity Form submission, PDF generation, and FTP upload.
-Version: 1.0
-Author: Yash
-*/
-
-// Exit if access directly
-if ( ! defined( 'ABSPATH') ) exit;
-
-/**
- * STEP 2: Restrict form access using an encrypted key in the URL.
- */
-add_action( 'template_redirect', function() {
-
-    // ?? Replace with your actual form page slug or ID
-    $protected_page_slug = 'prescription-transfer-request-form';  // e.g., if your page URL is /contact-form/
-    $valid_key           = 'test123';      // temporary static key (later we’ll encrypt)
-
-    if ( is_page( $protected_page_slug ) ) {
-
-        // Get ?access= value from URL
-        $user_key = isset( $_GET['access'] ) ? sanitize_text_field( $_GET['access'] ) : '';
-
-        // If it’s not the valid key, block the page
-        if ( $user_key !== $valid_key ) {
-            wp_die(
-                '<h2>Access Denied</h2><p>This form can only be accessed through a secure link.</p>',
-                'Access Denied',
-                array( 'response' => 403 )
-            );
-        }
-    }
-});
-
-/**
- * STEP 3: Generate PDF automatically after form submission.
- */
-add_action('gform_after_submission', 'sfh_generate_pdf_after_submission', 10, 2);
-function sfh_generate_pdf_after_submission($entry, $form) {
-
-    // Gravity Form ID and PDF feed ID
-    $target_form_id = 65;    // Your form ID
-    $pdf_feed_id    = 6877e61baa056;    // Your Gravity PDF feed ID
-
-    if ((int) $form['id'] !== $target_form_id) {
-        return; // not our target form
-    }
-
-    if (!class_exists('GPDFAPI')) {
-        error_log('Gravity PDF not found. PDF not generated.');
-        return;
-    }
-
-    try {
-        // Generate the PDF and get its file path
-        $pdf_path = GPDFAPI::generate_pdf($entry['id'], $pdf_feed_id, true);
-
-        if ($pdf_path && file_exists($pdf_path)) {
-            // Store file path in entry meta for later encryption/upload
-            gform_update_meta($entry['id'], 'sfh_pdf_path', $pdf_path);
-            error_log("PDF generated: $pdf_path");
-        } else {
-            error_log('Failed to generate PDF.');
-        }
-    } catch (Exception $e) {
-        error_log('PDF generation error: ' . $e->getMessage());
-    }
-}
