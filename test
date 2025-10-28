@@ -1,104 +1,105 @@
 <?php
 /*
-Plugin Name: Secure Form Handler Lite
-Description: Adds password gate, reuses Gravity PDF file, emails internal recipients, and deletes PDF after 10 mins.
-Version: 1.0
+Plugin Name: Secure Form Handler
+Description: Handles secure form access and optional post-submission actions for Gravity Forms.
+Version: 1.1
 Author: Yash
 */
 
+// Exit if accessed directly
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
- * STEP 1: Password protect the form page.
+ * STEP 1: Restrict form access using password gate.
  */
-add_action('template_redirect', function() {
+add_action( 'template_redirect', function() {
 
-    $protected_page_slug = 'prescription-transfer-request-form'; // your page slug
-    $form_password = 'test123';
+    $protected_page_slug = 'prescription-transfer-request-form';  // Your form page slug
+    $password            = 'test123'; // Password to access the form
 
-    if (is_page($protected_page_slug)) {
-        if (!session_id()) session_start();
+    if ( is_page( $protected_page_slug ) ) {
 
-        // If already unlocked, allow
-        if (!empty($_SESSION['sfh_unlocked'])) return;
+        // Check if password submitted
+        if ( isset( $_POST['sfh_form_password'] ) ) {
+            $entered_password = sanitize_text_field( $_POST['sfh_form_password'] );
 
-        // Handle password submission
-        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sfh_password'])) {
-            $entered = sanitize_text_field($_POST['sfh_password']);
-            if ($entered === $form_password) {
-                $_SESSION['sfh_unlocked'] = true;
-                wp_safe_redirect(get_permalink());
+            if ( $entered_password === $password ) {
+                // Allow access for this session
+                setcookie( 'sfh_access_granted', '1', time() + 3600, COOKIEPATH, COOKIE_DOMAIN, is_ssl() );
+                wp_redirect( get_permalink() );
                 exit;
             } else {
-                $error = '<p style="color:red;">Incorrect password.</p>';
+                $error_message = 'Incorrect password. Please try again.';
             }
         }
 
-        // Show password form
-        get_header();
-        echo '<div style="max-width:400px;margin:80px auto;padding:30px;border:1px solid #ddd;border-radius:10px;background:#fafafa;font-family:sans-serif;text-align:center">';
-        echo '<h3>Enter Access Password</h3>';
-        echo isset($error) ? $error : '';
-        echo '<form method="post"><input type="password" name="sfh_password" placeholder="Password" style="padding:10px;width:100%;margin-bottom:15px;" required>';
-        echo '<button type="submit" style="padding:10px 20px;background:#0073aa;color:#fff;border:none;border-radius:5px;">Submit</button></form>';
-        echo '</div>';
-        get_footer();
-        exit;
+        // If access not granted yet, show password form
+        if ( empty( $_COOKIE['sfh_access_granted'] ) ) {
+            ?>
+            <style>
+                body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #f5f5f5; margin: 0; }
+                form { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); text-align: center; }
+                input[type=password] { width: 220px; padding: 10px; border-radius: 5px; border: 1px solid #ccc; margin-bottom: 10px; }
+                input[type=submit] { background: #0073aa; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+                input[type=submit]:hover { background: #005f8d; }
+                p.error { color: red; margin-top: 5px; }
+            </style>
+            <form method="post">
+                <h2>Enter Access Password</h2>
+                <input type="password" name="sfh_form_password" placeholder="Enter password" required />
+                <br>
+                <input type="submit" value="Access Form">
+                <?php if ( ! empty( $error_message ) ) echo '<p class="error">' . esc_html( $error_message ) . '</p>'; ?>
+            </form>
+            <?php
+            exit;
+        }
     }
 });
 
 /**
- * STEP 2: After form submission - send PDF to internal team + schedule deletion.
+ * STEP 2: (Optional) Save the generated PDF path for reference.
  */
-add_action('gform_after_submission', function($entry, $form) {
+add_action( 'gform_after_submission', function( $entry, $form ) {
 
     $target_form_id = 65; // Your Gravity Form ID
-    if ((int)$form['id'] !== $target_form_id) return;
+    if ( (int) $form['id'] !== $target_form_id ) return;
 
-    // Path where Gravity PDF stores files
-    $upload_dir = WP_CONTENT_DIR . '/uploads/PDF_EXTENDED_TEMPLATES/';
-    $pattern = $upload_dir . '*.pdf';
-
-    // Find the latest generated PDF
-    $files = glob($pattern);
-    if (!$files) {
-        error_log('No Gravity PDF file found.');
+    if ( ! class_exists( 'GPDFAPI' ) ) {
+        error_log( 'Gravity PDF not found. Skipping PDF path save.' );
         return;
     }
 
-    // Get the most recent file
-    usort($files, function($a, $b) {
-        return filemtime($b) - filemtime($a);
-    });
-    $latest_pdf = $files[0];
+    // Get all available PDF feeds for this form
+    $feeds = GPDFAPI::get_feeds( $target_form_id );
+    if ( empty( $feeds ) ) return;
 
-    // Send to internal recipients
-    $internal_emails = [
-        'person1@example.com',
-        'person2@example.com',
-        'person3@example.com',
-        'person4@example.com',
-        'person5@example.com'
-    ];
+    // Pick the first feed (or use specific feed ID if known)
+    $pdf_feed_id = $feeds[0]['id'] ?? null;
 
-    $subject = 'New Secure Form Submission (Copy)';
-    $message = 'A new form submission was received. The attached PDF contains submission details.';
-    $headers = ['Content-Type: text/html; charset=UTF-8'];
+    if ( $pdf_feed_id ) {
+        try {
+            $pdf_path = GPDFAPI::generate_pdf( $entry['id'], $pdf_feed_id, true );
 
-    wp_mail($internal_emails, $subject, $message, $headers, [$latest_pdf]);
-    error_log('Internal email sent with PDF: ' . $latest_pdf);
+            if ( $pdf_path && file_exists( $pdf_path ) ) {
+                gform_update_meta( $entry['id'], 'sfh_pdf_path', $pdf_path );
 
-    // Schedule file deletion in 10 minutes
-    wp_schedule_single_event(time() + 600, 'sfh_delete_temp_pdf', [$latest_pdf]);
-
-}, 20, 2);
+                // Schedule deletion in 10 minutes
+                wp_schedule_single_event( time() + 600, 'sfh_delete_generated_pdf', [ $pdf_path ] );
+                error_log( "PDF generated and scheduled for deletion: $pdf_path" );
+            }
+        } catch ( Exception $e ) {
+            error_log( 'PDF generation error: ' . $e->getMessage() );
+        }
+    }
+}, 10, 2 );
 
 /**
  * STEP 3: Delete the PDF file after 10 minutes.
  */
-add_action('sfh_delete_temp_pdf', function($pdf_path) {
-    if (file_exists($pdf_path)) {
-        unlink($pdf_path);
-        error_log('Deleted PDF after 10 mins: ' . $pdf_path);
+add_action( 'sfh_delete_generated_pdf', function( $pdf_path ) {
+    if ( file_exists( $pdf_path ) ) {
+        unlink( $pdf_path );
+        error_log( "PDF deleted: $pdf_path" );
     }
 });
