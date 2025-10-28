@@ -1,3 +1,139 @@
+
+<?php
+/*
+Plugin Name: Secure Form Handler
+Description: Handles secure form access and password-protected PDF generation for Gravity Forms.
+Version: 1.2
+Author: Yash
+*/
+
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+/**
+ * STEP 1: Password gate for form page.
+ */
+add_action( 'template_redirect', function() {
+    $protected_page_slug = 'prescription-transfer-request-form';
+    $password = 'test123';
+
+    if ( is_page( $protected_page_slug ) ) {
+        if ( isset( $_POST['sfh_form_password'] ) ) {
+            $entered_password = sanitize_text_field( $_POST['sfh_form_password'] );
+            if ( $entered_password === $password ) {
+                setcookie( 'sfh_access_granted', '1', time() + 3600, COOKIEPATH, COOKIE_DOMAIN, is_ssl() );
+                wp_redirect( get_permalink() );
+                exit;
+            } else {
+                $error_message = 'Incorrect password. Please try again.';
+            }
+        }
+
+        if ( empty( $_COOKIE['sfh_access_granted'] ) ) {
+            ?>
+            <style>
+                body { font-family: Arial, sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; background:#f5f5f5; margin:0;}
+                form { background:white; padding:30px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,0.15); text-align:center;}
+                input[type=password]{ width:220px; padding:10px; border-radius:5px; border:1px solid #ccc; margin-bottom:10px;}
+                input[type=submit]{ background:#0073aa; color:white; border:none; padding:10px 20px; border-radius:5px; cursor:pointer;}
+                input[type=submit]:hover{ background:#005f8d;}
+                p.error{ color:red; margin-top:5px;}
+            </style>
+            <form method="post">
+                <h2>Enter Access Password</h2>
+                <input type="password" name="sfh_form_password" placeholder="Enter password" required />
+                <br>
+                <input type="submit" value="Access Form">
+                <?php if ( ! empty( $error_message ) ) echo '<p class="error">' . esc_html( $error_message ) . '</p>'; ?>
+            </form>
+            <?php
+            exit;
+        }
+    }
+});
+
+/**
+ * STEP 2: Generate and protect PDF on submission.
+ */
+add_action( 'gform_after_submission', function( $entry, $form ) {
+    $target_form_id = 65;
+    if ( (int) $form['id'] !== $target_form_id ) return;
+
+    if ( ! class_exists( 'GPDFAPI' ) ) {
+        error_log( 'Gravity PDF not active.' );
+        return;
+    }
+
+    // Generate PDF using Gravity PDF
+    $feeds = GPDFAPI::get_feeds( $target_form_id );
+    if ( empty( $feeds ) ) return;
+
+    $pdf_feed_id = $feeds[0]['id'] ?? null;
+    if ( ! $pdf_feed_id ) return;
+
+    try {
+        $pdf_path = GPDFAPI::generate_pdf( $entry['id'], $pdf_feed_id, true );
+
+        if ( $pdf_path && file_exists( $pdf_path ) ) {
+
+            // ---- ADD PASSWORD PROTECTION ----
+            $password = 'secure123'; // Shared password for client
+
+            require_once ABSPATH . 'wp-content/plugins/gravity-forms-pdf-extended/vendor/autoload.php';
+            use setasign\FpdiProtection\FpdiProtection;
+
+            $pdf = new FpdiProtection();
+            $pdf->setSourceFile($pdf_path);
+            $tplIdx = $pdf->importPage(1);
+            $pdf->addPage();
+            $pdf->useTemplate($tplIdx);
+            $pdf->SetProtection([], $password); // Lock with password
+
+            $encrypted_path = str_replace('.pdf', '-protected.pdf', $pdf_path);
+            $pdf->Output($encrypted_path, 'F');
+
+            // Replace old file with encrypted one
+            unlink($pdf_path);
+            rename($encrypted_path, $pdf_path);
+
+            gform_update_meta( $entry['id'], 'sfh_pdf_path', $pdf_path );
+
+            // Schedule deletion in 10 min
+            wp_schedule_single_event( time() + 600, 'sfh_delete_generated_pdf', [ $pdf_path ] );
+
+            error_log("Protected PDF created and scheduled for deletion: $pdf_path");
+        }
+    } catch ( Exception $e ) {
+        error_log('PDF protection error: ' . $e->getMessage());
+    }
+}, 10, 2 );
+
+/**
+ * STEP 3: Delete PDF file after 10 minutes.
+ */
+add_action( 'sfh_delete_generated_pdf', function( $pdf_path ) {
+    if ( file_exists( $pdf_path ) ) {
+        unlink( $pdf_path );
+        error_log("PDF deleted: $pdf_path");
+    }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <?php
 /*
 Plugin Name: Secure Form Handler
